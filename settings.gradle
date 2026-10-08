@@ -1,1 +1,10 @@
 include ':app'
+include ':terminal-emulator'
+include ':terminal-view'
+include ':termux-shared'
+include ':termux-am-library'
+
+project(':terminal-emulator').projectDir = file('termux-modules/terminal-emulator')
+project(':terminal-view').projectDir = file('termux-modules/terminal-view')
+project(':termux-shared').projectDir = file('termux-modules/termux-shared')
+project(':termux-am-library').projectDir = file('termux-modules/termux-am-library')
