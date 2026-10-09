@@ -40,3 +40,20 @@ certificate (required for the shared com.termux UID).
   "Grant device permissions" button.
 - AndroidManifest: Bluetooth LE permissions added ahead of the jawn BLE
   bridge (legacy BLUETOOTH/BLUETOOTH_ADMIN plus BLUETOOTH_SCAN/CONNECT).
+
+## JawnOS delta: jawn-bt BLE bridge (JawnBleService)
+
+- Replaces the Tasker + nl.steinov.bletaskerplugin middleman. Owns a
+  persistent BLE GATT link (Nordic UART Service) and speaks a line-based JSON
+  protocol over a filesystem unix socket at
+  $PREFIX/var/run/jawn-bt.sock (same shared UID, so jawn connects directly).
+- Commands: scan / connect / send / disconnect / status / shutdown.
+  Events: status, scan, scan_done, connected, disconnected, message, sent, error.
+- Keeps the link up with auto-reconnect (3s backoff doubling to 30s); writes
+  are chunked to (MTU-3) after requesting MTU 512; text is relayed raw so
+  jawn's base64+JSON conventions and the ESP32 chunked streams (===EOF===)
+  pass through unchanged. Notification-channel "jawn-bt", silent.
+- Client: tools/jawn-bt (Perl; auto-starts the service via
+  am start-foreground-service when the socket is absent).
+- Manifest: service JawnBleService (exported=false, foregroundServiceType
+  connectedDevice).

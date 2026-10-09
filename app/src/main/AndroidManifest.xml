@@ -108,6 +108,11 @@
             android:exported="true"
             android:theme="@android:style/Theme.Material.NoActionBar" />
 
+        <service
+            android:name=".JawnBleService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
         <activity android:name=".apis.DialogAPI$DialogActivity"
             android:theme="@style/DialogTheme"
             android:noHistory="true"
