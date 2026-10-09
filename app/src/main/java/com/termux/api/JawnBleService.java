@@ -132,7 +132,9 @@ public class JawnBleService extends Service {
             // how jawn's own services listen.
             serverSocket = new ServerSocket();
             serverSocket.setReuseAddress(true);
-            serverSocket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), PORT));
+            // Bind IPv4 loopback explicitly: getLoopbackAddress() can return
+            // ::1 (IPv6), which is unreachable for IPv4 clients like jawn-bt.
+            serverSocket.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), PORT));
         } catch (Throwable t) {
             Logger.logError(LOG_TAG, "Failed to bind port " + PORT + ": " + t);
             stopSelf();
