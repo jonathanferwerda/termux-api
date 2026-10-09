@@ -378,6 +378,7 @@ public class JawnBleService extends Service {
                 .putString("service", targetService == null ? null : targetService.toString())
                 .putString("rx", targetRx == null ? null : targetRx.toString())
                 .putString("tx", targetTx == null ? null : targetTx.toString())
+                .putInt("mtu", targetMtu)
                 .apply();
         } catch (Throwable t) { }
     }
@@ -397,7 +398,7 @@ public class JawnBleService extends Service {
                 return;
             }
             Logger.logInfo(LOG_TAG, "auto-connecting to last device " + mac);
-            connect(mac, sp.getString("service", null), sp.getString("rx", null), sp.getString("tx", null), 0);
+            connect(mac, sp.getString("service", null), sp.getString("rx", null), sp.getString("tx", null), sp.getInt("mtu", 512));
         } catch (Throwable t) {
             Logger.logInfo(LOG_TAG, "auto-connect failed: " + t);
         }
