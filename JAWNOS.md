@@ -69,3 +69,13 @@ certificate (required for the shared com.termux UID).
   REQUEST_UPDATES already had a 30 s bound; this brings "once" in line.
 - JawnBleService: unlink-and-retry when the socket file is left behind by a
   killed instance (onDestroy never ran), fixing "Address already in use".
+
+## JawnOS delta: jawn-bt transport moved to loopback TCP
+
+- The filesystem unix socket at $PREFIX/var/run/jawn-bt.sock never worked in
+  practice: Android app mount namespaces make a socket file created by
+  com.termux.api invisible to com.termux processes despite the shared UID, and
+  android.net.LocalServerSocket defaults to SOCK_SEQPACKET which Perl's
+  IO::Socket::UNIX (SOCK_STREAM) cannot connect to. JawnBleService now listens
+  on 127.0.0.1:45999 (loopback only) and tools/jawn-bt connects over TCP.
+  Same line-based JSON protocol, no other changes.

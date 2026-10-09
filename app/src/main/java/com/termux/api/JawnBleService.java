@@ -18,8 +18,6 @@ import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.net.LocalServerSocket;
-import android.net.LocalSocket;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -27,8 +25,12 @@ import android.os.IBinder;
 
 import org.json.JSONObject;
 
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -56,11 +58,13 @@ public class JawnBleService extends Service {
     private static final int NOTIFICATION_ID = 4202;
     private static final String CHANNEL_ID = "jawn-bt";
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+    /** Loopback TCP port; the client (tools/jawn-bt) connects to 127.0.0.1:PORT. */
+    private static final int PORT = 45999;
 
     private HandlerThread thread;
     private Handler handler;
-    private LocalServerSocket serverSocket;
-    private final CopyOnWriteArrayList<LocalSocket> clients = new CopyOnWriteArrayList<LocalSocket>();
+    private ServerSocket serverSocket;
+    private final CopyOnWriteArrayList<Socket> clients = new CopyOnWriteArrayList<Socket>();
     private final Object writeLock = new Object();
 
     private BluetoothAdapter adapter;
@@ -79,10 +83,6 @@ public class JawnBleService extends Service {
     private BluetoothLeScanner scanner;
     private boolean scanning = false;
     private final List<String> scanSeen = new ArrayList<String>();
-
-    private String socketPath() {
-        return TermuxConstants.TERMUX_PREFIX_DIR_PATH + "/var/run/jawn-bt.sock";
-    }
 
     private boolean hasPerm(String perm) {
         return checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED;
@@ -125,27 +125,23 @@ public class JawnBleService extends Service {
         handler = new Handler(thread.getLooper());
 
         try {
-            File f = new File(socketPath());
-            File dir = f.getParentFile();
-            if (dir != null && !dir.exists()) dir.mkdirs();
-            if (f.exists()) f.delete();
-            try {
-                serverSocket = new LocalServerSocket(socketPath());
-            } catch (java.io.IOException e) {
-                // A previous instance killed by the system (ANR/OOM) can leave the
-                // socket file behind without onDestroy ever running. Unlink and retry.
-                f.delete();
-                serverSocket = new LocalServerSocket(socketPath());
-            }
+            // Loopback TCP: a filesystem unix socket created here was not usable
+            // from the other app of the shared UID (app mount namespaces), and
+            // Android LocalServerSocket defaults to SOCK_SEQPACKET which common
+            // clients cannot speak. Loopback TCP has no such traps and matches
+            // how jawn's own services listen.
+            serverSocket = new ServerSocket();
+            serverSocket.setReuseAddress(true);
+            serverSocket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), PORT));
         } catch (Throwable t) {
-            Logger.logError(LOG_TAG, "Failed to open socket: " + t);
+            Logger.logError(LOG_TAG, "Failed to bind port " + PORT + ": " + t);
             stopSelf();
             return;
         }
         new Thread(new Runnable() {
             public void run() { acceptLoop(); }
         }).start();
-        Logger.logInfo(LOG_TAG, "JawnBleService started on " + socketPath());
+        Logger.logInfo(LOG_TAG, "JawnBleService started on 127.0.0.1:" + PORT);
     }
 
     @Override
@@ -165,7 +161,7 @@ public class JawnBleService extends Service {
     @Override
     public void onDestroy() {
         try { if (serverSocket != null) serverSocket.close(); } catch (Throwable t) { }
-        for (LocalSocket c : clients) { try { c.close(); } catch (Throwable t) { } }
+        for (Socket c : clients) { try { c.close(); } catch (Throwable t) { } }
         clients.clear();
         if (handler != null) {
             handler.post(new Runnable() {
@@ -173,7 +169,6 @@ public class JawnBleService extends Service {
             });
         }
         if (thread != null) thread.quitSafely();
-        try { new File(socketPath()).delete(); } catch (Throwable t) { }
         Logger.logInfo(LOG_TAG, "JawnBleService stopped");
         super.onDestroy();
     }
@@ -183,7 +178,7 @@ public class JawnBleService extends Service {
     private void acceptLoop() {
         while (true) {
             try {
-                LocalSocket c = serverSocket.accept();
+                Socket c = serverSocket.accept();
                 clients.add(c);
                 emitStatus(); // tell the new client where things stand
                 new Thread(new clientReader(c)).start();
@@ -195,8 +190,8 @@ public class JawnBleService extends Service {
     }
 
     private class clientReader implements Runnable {
-        private final LocalSocket c;
-        clientReader(LocalSocket c) { this.c = c; }
+        private final Socket c;
+        clientReader(Socket c) { this.c = c; }
         public void run() {
             try {
                 BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
@@ -223,7 +218,7 @@ public class JawnBleService extends Service {
         String line = o.toString() + "\n";
         byte[] bytes = line.getBytes(StandardCharsets.UTF_8);
         synchronized (writeLock) {
-            for (LocalSocket c : clients) {
+            for (Socket c : clients) {
                 try {
                     OutputStream os = c.getOutputStream();
                     os.write(bytes);
