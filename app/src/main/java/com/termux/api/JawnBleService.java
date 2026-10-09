@@ -315,6 +315,7 @@ public class JawnBleService extends Service {
     private void stopScan() {
         if (!scanning) return;
         scanning = false;
+        Logger.logInfo(LOG_TAG, "scan finished, " + scanSeen.size() + " device(s)");
         try { scanner.stopScan(scanCallback); } catch (Throwable t) { }
         try {
             JSONObject o = new JSONObject();
