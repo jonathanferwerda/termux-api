@@ -495,7 +495,18 @@ public class JawnBleService extends Service {
         }
 
         public void onDescriptorWrite(BluetoothGatt g, BluetoothGattDescriptor d, int status) {
-            if (d.getUuid().equals(CCCD)) emitConnected();
+            if (d.getUuid().equals(CCCD)) {
+                // say who is on the other end: the watch prints this in the net
+                // room. Android rotates the bluetooth address underneath the
+                // connection, so a name is what stays meaningful.
+                try {
+                    JSONObject hello = new JSONObject();
+                    hello.put("type", "hello");
+                    hello.put("name", Build.MODEL);
+                    sendText(hello.toString());
+                } catch (Throwable t) { }
+                emitConnected();
+            }
         }
 
         public void onCharacteristicChanged(BluetoothGatt g, BluetoothGattCharacteristic c) {
@@ -534,12 +545,20 @@ public class JawnBleService extends Service {
     private void sendText(String message) {
         if (gatt == null || writeChar == null) { emitError("not connected"); return; }
         byte[] bytes = message.getBytes(StandardCharsets.UTF_8);
-        int chunk = Math.max(20, mtu - 3);
+        int maxChunk = Math.max(20, mtu - 3);
+        // Frame every write as "<i>/<n>:" + chunk so the watch can reassemble a
+        // payload that does not fit one write (a room payload is about 5 KB, the
+        // now_me params about 700 bytes). 12 covers the longest "<i>/<n>:".
+        int chunk = Math.max(20, maxChunk - 12);
+        int total = bytes.length == 0 ? 1 : (bytes.length + chunk - 1) / chunk;
         synchronized (writeQueue) {
-            for (int i = 0; i < bytes.length; i += chunk) {
-                int len = Math.min(chunk, bytes.length - i);
-                byte[] part = new byte[len];
-                System.arraycopy(bytes, i, part, 0, len);
+            for (int i = 0; i < total; i++) {
+                int off = i * chunk;
+                int len = Math.min(chunk, bytes.length - off);
+                byte[] head = (i + "/" + total + ":").getBytes(StandardCharsets.UTF_8);
+                byte[] part = new byte[head.length + len];
+                System.arraycopy(head, 0, part, 0, head.length);
+                if (len > 0) System.arraycopy(bytes, off, part, head.length, len);
                 writeQueue.add(part);
             }
         }
