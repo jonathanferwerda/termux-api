@@ -93,8 +93,16 @@ public class JawnBleService extends Service {
         adapter = bm == null ? null : bm.getAdapter();
         if (adapter == null) { emitError("no bluetooth adapter"); return false; }
         if (!adapter.isEnabled()) { emitError("bluetooth is disabled"); return false; }
-        if (Build.VERSION.SDK_INT >= 31 && !hasPerm(android.Manifest.permission.BLUETOOTH_SCAN)) {
-            emitError("missing Bluetooth permission; grant it via the JawnOS dashboard (Grant device permissions)");
+        // The app targets SDK 28: on Android 12+ the legacy rules apply, where
+        // BLE scan results require the location permission instead of
+        // BLUETOOTH_SCAN. Trust targetSdkVersion rather than assume.
+        if (getApplicationInfo().targetSdkVersion >= 31) {
+            if (!hasPerm(android.Manifest.permission.BLUETOOTH_SCAN)) {
+                emitError("missing Bluetooth scan permission; grant it via the JawnOS dashboard (Grant device permissions)");
+                return false;
+            }
+        } else if (!hasPerm(android.Manifest.permission.ACCESS_FINE_LOCATION)) {
+            emitError("missing location permission (BLE scanning needs it on this app's target); grant it via the JawnOS dashboard (Grant device permissions)");
             return false;
         }
         return true;
@@ -316,7 +324,7 @@ public class JawnBleService extends Service {
     private void connect(String mac, String service, String rx, String tx) {
         if (!bluetoothReady()) return;
         if (mac == null || mac.isEmpty()) { emitError("connect: mac required"); return; }
-        if (Build.VERSION.SDK_INT >= 31 && !hasPerm(android.Manifest.permission.BLUETOOTH_CONNECT)) {
+        if (getApplicationInfo().targetSdkVersion >= 31 && !hasPerm(android.Manifest.permission.BLUETOOTH_CONNECT)) {
             emitError("missing Bluetooth connect permission; use Grant device permissions in the JawnOS dashboard");
             return;
         }
