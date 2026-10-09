@@ -182,6 +182,7 @@ public class JawnBleService extends Service {
             try {
                 Socket c = serverSocket.accept();
                 clients.add(c);
+                Logger.logInfo(LOG_TAG, "client connected, total " + clients.size());
                 emitStatus(); // tell the new client where things stand
                 new Thread(new clientReader(c)).start();
             } catch (Throwable t) {
@@ -209,9 +210,10 @@ public class JawnBleService extends Service {
                     }
                 }
             } catch (Throwable t) {
-                // client went away
+                Logger.logInfo(LOG_TAG, "client read ended: " + t);
             }
             clients.remove(c);
+            Logger.logInfo(LOG_TAG, "client removed, total " + clients.size());
             try { c.close(); } catch (Throwable t) { }
         }
     }
@@ -219,6 +221,7 @@ public class JawnBleService extends Service {
     private void emit(JSONObject o) {
         String line = o.toString() + "\n";
         byte[] bytes = line.getBytes(StandardCharsets.UTF_8);
+        Logger.logInfo(LOG_TAG, "emit -> " + clients.size() + " client(s): " + (line.length() > 60 ? line.substring(0, 60) + "..." : line.trim()));
         synchronized (writeLock) {
             for (Socket c : clients) {
                 try {
@@ -226,11 +229,20 @@ public class JawnBleService extends Service {
                     os.write(bytes);
                     os.flush();
                 } catch (Throwable t) {
+                    Logger.logInfo(LOG_TAG, "emit failed: " + t);
                     clients.remove(c);
                     try { c.close(); } catch (Throwable t2) { }
                 }
             }
         }
+    }
+
+    /** Emits from Bluetooth callbacks arrive on the main/binder thread; do the
+     *  socket I/O on our handler thread. */
+    private void emitFromCallback(final JSONObject o) {
+        handler.post(new Runnable() {
+            public void run() { emit(o); }
+        });
     }
 
     private void emitError(String message) {
@@ -291,7 +303,7 @@ public class JawnBleService extends Service {
                 String name = result.getDevice().getName();
                 o.put("name", name == null ? JSONObject.NULL : name);
                 o.put("rssi", result.getRssi());
-                emit(o);
+                emitFromCallback(o);
             } catch (Throwable t) { }
         }
         public void onScanFailed(int errorCode) {
@@ -392,7 +404,7 @@ public class JawnBleService extends Service {
                     JSONObject o = new JSONObject();
                     o.put("event", "disconnected");
                     o.put("status", status);
-                    emit(o);
+                    emitFromCallback(o);
                 } catch (Throwable t) { }
                 scheduleReconnect();
             }
@@ -444,7 +456,7 @@ public class JawnBleService extends Service {
                 JSONObject o = new JSONObject();
                 o.put("event", "message");
                 o.put("data", text);
-                emit(o);
+                emitFromCallback(o);
             } catch (Throwable t) { }
         }
 
@@ -466,7 +478,7 @@ public class JawnBleService extends Service {
             o.put("event", "connected");
             o.put("mac", targetMac);
             o.put("mtu", mtu);
-            emit(o);
+            emitFromCallback(o);
         } catch (Throwable t) { }
     }
 
