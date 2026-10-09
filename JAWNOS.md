@@ -28,3 +28,15 @@ Purpose: device APIs (camera, microphone, notifications, SMS, fingerprint,
 Signing: debug builds use app/testkey_untrusted.jks, which is byte-identical
 to termux-app's app/dev_keystore.jks, so both JawnOS apps share one
 certificate (required for the shared com.termux UID).
+
+## JawnOS delta: grant-all permissions screen
+
+- JawnGrantAllActivity (exported; dark platform theme for the same reason as
+  the dashboard: avoid Light-theme-with-dark-background mismatches): requests
+  the runtime permissions behind jawn's termux-* utilities (camera, microphone,
+  location, SMS, call log, contacts, biometric, Bluetooth LE on Android 12+)
+  and links the special-access pages (overlay, notification listener,
+  background location). Launched from the JawnOS app dashboard's
+  "Grant device permissions" button.
+- AndroidManifest: Bluetooth LE permissions added ahead of the jawn BLE
+  bridge (legacy BLUETOOTH/BLUETOOTH_ADMIN plus BLUETOOTH_SCAN/CONNECT).

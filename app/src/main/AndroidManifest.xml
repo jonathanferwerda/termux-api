@@ -11,6 +11,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <!-- Bluetooth LE for the jawn BLE bridge (scan/connect on Android 12+) -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
@@ -97,6 +102,11 @@
             android:noHistory="true"
             android:excludeFromRecents="true"
             android:exported="false" />
+
+        <activity
+            android:name=".JawnGrantAllActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
 
         <activity android:name=".apis.DialogAPI$DialogActivity"
             android:theme="@style/DialogTheme"
