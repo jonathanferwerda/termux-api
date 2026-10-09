@@ -60,25 +60,33 @@ public class LocationAPI {
                         break;
                     case REQUEST_ONCE:
                         Looper.prepare();
-                        manager.requestSingleUpdate(provider, new LocationListener() {
+                        // A single GPS update can wait forever for a fix (e.g. indoors).
+                        // That used to hang the broadcast receiver past Android's timeout
+                        // and got the whole app ANR-killed, taking every other component
+                        // down with it (jawn-bt included). Wait at most 25 s, then fall
+                        // back to the last known location, and always return.
+                        final String onceProvider = provider;
+                        final java.util.concurrent.atomic.AtomicBoolean onceDone = new java.util.concurrent.atomic.AtomicBoolean(false);
+                        final LocationListener onceListener = new LocationListener() {
 
                             @Override
                             public void onStatusChanged(String changedProvider, int status, Bundle extras) {
-                                // TODO Auto-generated method stub
+                                // Do nothing.
                             }
 
                             @Override
                             public void onProviderEnabled(String changedProvider) {
-                                // TODO Auto-generated method stub
+                                // Do nothing.
                             }
 
                             @Override
                             public void onProviderDisabled(String changedProvider) {
-                                // TODO Auto-generated method stub
+                                // Do nothing.
                             }
 
                             @Override
                             public void onLocationChanged(Location location) {
+                                if (!onceDone.compareAndSet(false, true)) return;
                                 try {
                                     locationToJson(location, out);
                                 } catch (IOException e) {
@@ -87,7 +95,28 @@ public class LocationAPI {
                                     Looper.myLooper().quit();
                                 }
                             }
-                        }, null);
+                        };
+                        manager.requestSingleUpdate(onceProvider, onceListener, null);
+                        final Looper onceLooper = Looper.myLooper();
+                        new Thread() {
+                            @Override
+                            public void run() {
+                                try {
+                                    Thread.sleep(25 * 1000);
+                                } catch (InterruptedException e) {
+                                    return;
+                                }
+                                if (!onceDone.compareAndSet(false, true)) return;
+                                try {
+                                    manager.removeUpdates(onceListener);
+                                    locationToJson(manager.getLastKnownLocation(onceProvider), out);
+                                } catch (Throwable t) {
+                                    Logger.logStackTraceWithMessage(LOG_TAG, "Location timeout fallback", t);
+                                } finally {
+                                    onceLooper.quit();
+                                }
+                            }
+                        }.start();
                         Looper.loop();
                         break;
                     case REQUEST_UPDATES:

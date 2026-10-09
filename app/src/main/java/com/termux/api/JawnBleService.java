@@ -129,7 +129,14 @@ public class JawnBleService extends Service {
             File dir = f.getParentFile();
             if (dir != null && !dir.exists()) dir.mkdirs();
             if (f.exists()) f.delete();
-            serverSocket = new LocalServerSocket(socketPath());
+            try {
+                serverSocket = new LocalServerSocket(socketPath());
+            } catch (java.io.IOException e) {
+                // A previous instance killed by the system (ANR/OOM) can leave the
+                // socket file behind without onDestroy ever running. Unlink and retry.
+                f.delete();
+                serverSocket = new LocalServerSocket(socketPath());
+            }
         } catch (Throwable t) {
             Logger.logError(LOG_TAG, "Failed to open socket: " + t);
             stopSelf();

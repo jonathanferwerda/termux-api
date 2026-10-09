@@ -57,3 +57,15 @@ certificate (required for the shared com.termux UID).
   am start-foreground-service when the socket is absent).
 - Manifest: service JawnBleService (exported=false, foregroundServiceType
   connectedDevice).
+
+## JawnOS delta: LocationAPI timeout (ANR protection)
+
+- REQUEST_ONCE previously used requestSingleUpdate + Looper.loop() with no
+  timeout: while there was no fix (indoors, GPS cold), the broadcast receiver
+  hung past Android's timeout and the whole app got ANR-killed every time
+  jawn's navigation utility called `termux-location` (~2 min cadence observed
+  on the phone). It now waits at most 25 s, then falls back to
+  getLastKnownLocation (or returns the usual API_ERROR) and always returns.
+  REQUEST_UPDATES already had a 30 s bound; this brings "once" in line.
+- JawnBleService: unlink-and-retry when the socket file is left behind by a
+  killed instance (onDestroy never ran), fixing "Address already in use".
