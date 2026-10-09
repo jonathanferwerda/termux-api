@@ -79,3 +79,11 @@ certificate (required for the shared com.termux UID).
   IO::Socket::UNIX (SOCK_STREAM) cannot connect to. JawnBleService now listens
   on 127.0.0.1:45999 (loopback only) and tools/jawn-bt connects over TCP.
   Same line-based JSON protocol, no other changes.
+
+## JawnOS delta: MTU request is opt-in
+
+- The connect command no longer requests MTU 512 by default: a large-MTU link
+  disturbed the T-Watch's LVGL rendering (radio/flush contention showed as
+  leftover button artifacts on its screen). Default is now the classic 23
+  (writes are chunked at mtu-3 either way); pass "mtu":N in the connect
+  command to opt back in (e.g. to test bulk throughput).

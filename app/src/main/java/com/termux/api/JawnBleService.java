@@ -72,6 +72,7 @@ public class JawnBleService extends Service {
     private BluetoothGattCharacteristic writeChar;
     private BluetoothGattCharacteristic notifyChar;
     private int mtu = 23;
+    private int targetMtu = 0; // 0 = leave the link at the default 23 (MTU requests disturbed the T-Watch display)
     private boolean autoReconnect = false;
     private String targetMac;
     private UUID targetService, targetRx, targetTx;
@@ -273,7 +274,7 @@ public class JawnBleService extends Service {
         if ("scan".equals(cmd)) {
             startScan(o.optInt("seconds", 8));
         } else if ("connect".equals(cmd)) {
-            connect(o.optString("mac", null), o.optString("service", null), o.optString("rx", null), o.optString("tx", null));
+            connect(o.optString("mac", null), o.optString("service", null), o.optString("rx", null), o.optString("tx", null), o.optInt("mtu", 0));
         } else if ("send".equals(cmd)) {
             sendText(o.optString("message", ""));
         } else if ("disconnect".equals(cmd)) {
@@ -338,7 +339,7 @@ public class JawnBleService extends Service {
 
     // ---------- gatt ----------
 
-    private void connect(String mac, String service, String rx, String tx) {
+    private void connect(String mac, String service, String rx, String tx, int wantMtu) {
         if (!bluetoothReady()) return;
         if (mac == null || mac.isEmpty()) { emitError("connect: mac required"); return; }
         if (getApplicationInfo().targetSdkVersion >= 31 && !hasPerm(android.Manifest.permission.BLUETOOTH_CONNECT)) {
@@ -355,6 +356,7 @@ public class JawnBleService extends Service {
             emitError("bad uuid: " + t);
             return;
         }
+        targetMtu = wantMtu;
         autoReconnect = true;
         reconnectDelay = 3000;
         doConnect();
@@ -396,7 +398,12 @@ public class JawnBleService extends Service {
         public void onConnectionStateChange(BluetoothGatt g, int status, int newState) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 reconnectDelay = 3000;
-                try { g.requestMtu(512); } catch (Throwable t) { }
+                if (targetMtu > 0) {
+                    // Off by default: requesting 512 disturbed the T-Watch's
+                    // display rendering (BLE radio + LVGL flush contention).
+                    // Pass "mtu" in the connect command to opt back in.
+                    try { g.requestMtu(targetMtu); } catch (Throwable t) { }
+                }
                 try { g.discoverServices(); } catch (Throwable t) { emitError("discoverServices: " + t); }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 closeGatt();
