@@ -87,3 +87,11 @@ certificate (required for the shared com.termux UID).
   leftover button artifacts on its screen). Default is now the classic 23
   (writes are chunked at mtu-3 either way); pass "mtu":N in the connect
   command to opt back in (e.g. to test bulk throughput).
+
+## JawnOS delta: logo1 branding for the API app
+
+- Launcher icon now uses the logo1 art (black + yellow doodle), legacy
+  density PNGs plus an adaptive icon; the old vector drawable is gone.
+- Notifications use a white alpha-mask silhouette of the doodle
+  (drawable-*/jawn_notification.png): the default small icon in
+  NotificationAPI and the JawnBleService notification both point at it.

@@ -193,7 +193,7 @@ public class NotificationAPI {
         
         final NotificationCompat.Builder notification = new NotificationCompat.Builder(context,
                 channel);
-        notification.setSmallIcon(R.drawable.ic_event_note_black_24dp);
+        notification.setSmallIcon(R.drawable.jawn_notification);
         notification.setColor(0xFF000000);
         notification.setContentTitle(title);
         notification.setPriority(priority);

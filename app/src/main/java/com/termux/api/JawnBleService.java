@@ -118,7 +118,7 @@ public class JawnBleService extends Service {
             nm.createNotificationChannel(ch);
         }
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
-        Notification n = b.setContentTitle("JawnOS BLE bridge").setContentText("Bluetooth LE link running").setSmallIcon(android.R.drawable.stat_sys_data_bluetooth).setOngoing(true).build();
+        Notification n = b.setContentTitle("JawnOS BLE bridge").setContentText("Bluetooth LE link running").setSmallIcon(R.drawable.jawn_notification).setOngoing(true).build();
         startForeground(NOTIFICATION_ID, n);
 
         thread = new HandlerThread("jawn-ble");
