@@ -60,6 +60,9 @@ public class JawnBleService extends Service {
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     /** Loopback TCP port; the client (tools/jawn-bt) connects to 127.0.0.1:PORT. */
     private static final int PORT = 45999;
+    /** Where the last successful connect target is remembered for auto-connect. */
+    private static final String PREFS = "jawn-bt";
+    private int autoConnectAttempts = 0;
 
     private HandlerThread thread;
     private Handler handler;
@@ -145,6 +148,11 @@ public class JawnBleService extends Service {
             public void run() { acceptLoop(); }
         }).start();
         Logger.logInfo(LOG_TAG, "JawnBleService started on 127.0.0.1:" + PORT);
+        // Hands-free receive: re-acquire the last device (e.g. the watch) so
+        // its notifications flow without any send having to happen first.
+        handler.postDelayed(new Runnable() {
+            public void run() { autoConnectLast(); }
+        }, 1500);
     }
 
     @Override
@@ -359,7 +367,40 @@ public class JawnBleService extends Service {
         targetMtu = wantMtu;
         autoReconnect = true;
         reconnectDelay = 3000;
+        rememberTarget();
         doConnect();
+    }
+
+    private void rememberTarget() {
+        try {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString("mac", targetMac)
+                .putString("service", targetService == null ? null : targetService.toString())
+                .putString("rx", targetRx == null ? null : targetRx.toString())
+                .putString("tx", targetTx == null ? null : targetTx.toString())
+                .apply();
+        } catch (Throwable t) { }
+    }
+
+    private void autoConnectLast() {
+        try {
+            android.content.SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+            String mac = sp.getString("mac", null);
+            if (mac == null) return;
+            if (gatt != null && writeChar != null) return; // already linked
+            if (!bluetoothReady()) {
+                if (autoConnectAttempts++ < 20) {
+                    handler.postDelayed(new Runnable() {
+                        public void run() { autoConnectLast(); }
+                    }, 15000);
+                }
+                return;
+            }
+            Logger.logInfo(LOG_TAG, "auto-connecting to last device " + mac);
+            connect(mac, sp.getString("service", null), sp.getString("rx", null), sp.getString("tx", null), 0);
+        } catch (Throwable t) {
+            Logger.logInfo(LOG_TAG, "auto-connect failed: " + t);
+        }
     }
 
     private void doConnect() {

@@ -95,3 +95,13 @@ certificate (required for the shared com.termux UID).
 - Notifications use a white alpha-mask silhouette of the doodle
   (drawable-*/jawn_notification.png): the default small icon in
   NotificationAPI and the JawnBleService notification both point at it.
+
+## JawnOS delta: auto-connect last device on start
+
+- The service remembers the last successful connect target (mac + service/rx/tx
+  uuids, SharedPreferences "jawn-bt") and re-acquires it 1.5 s after startup
+  (retrying every 15 s up to 20 times if Bluetooth is not ready yet). This is
+  what makes the receive direction hands-free: start the bridge (boot receiver
+  does, or the dashboard button) and the watch's notifications flow without a
+  send having to happen first. An explicit disconnect still disconnects; a
+  service restart re-acquires.
