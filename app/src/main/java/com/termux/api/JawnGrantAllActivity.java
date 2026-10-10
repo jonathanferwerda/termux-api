@@ -3,6 +3,7 @@ package com.termux.api;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -24,6 +25,7 @@ import java.util.ArrayList;
 public class JawnGrantAllActivity extends Activity {
 
     private static final int REQUEST_CODE = 4201;
+    private static final int REQUEST_BACKGROUND_LOCATION = 4202;
 
     private TextView status;
 
@@ -55,8 +57,11 @@ public class JawnGrantAllActivity extends Activity {
             }
         });
         add(ll, "Location: allow all the time", new Runnable() {
+            public void run() { requestBackgroundLocation(); }
+        });
+        add(ll, "Location services: turn on", new Runnable() {
             public void run() {
-                open(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()));
+                open(Settings.ACTION_LOCATION_SOURCE_SETTINGS, null);
             }
         });
 
@@ -91,15 +96,54 @@ public class JawnGrantAllActivity extends Activity {
         for (String p : runtimePermissions()) {
             if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) missing.add(p);
         }
-        if (missing.isEmpty()) {
-            Toast.makeText(this, "All runtime permissions already granted", Toast.LENGTH_SHORT).show();
+        if (!missing.isEmpty()) {
+            requestPermissions(missing.toArray(new String[0]), REQUEST_CODE);
             return;
         }
-        requestPermissions(missing.toArray(new String[0]), REQUEST_CODE);
+        // The foreground permissions are in place. The one the termux-* commands
+        // that run from a background broadcast receiver still need - and that the
+        // normal dialog never covers - is "all the time" location.
+        if (needsBackgroundLocation()) {
+            requestBackgroundLocation();
+        } else {
+            Toast.makeText(this, "All runtime permissions already granted", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private boolean needsBackgroundLocation() {
+        return Build.VERSION.SDK_INT >= 29
+                && checkSelfPermission(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED;
+    }
+
+    /**
+     * ACCESS_BACKGROUND_LOCATION is not a normal dialog grant. On Android 11+
+     * requesting it only offers "Allow in settings", which opens this app's
+     * location page where the user picks "Allow all the time"; without it a
+     * background service (termux-location in jawn's utilities) answers
+     * "Failed to get location". Foreground location must be granted first.
+     */
+    private void requestBackgroundLocation() {
+        if (Build.VERSION.SDK_INT < 29) {
+            Toast.makeText(this, "Background location is not required before Android 10", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Grant foreground location first", Toast.LENGTH_SHORT).show();
+            requestAll();
+            return;
+        }
+        requestPermissions(new String[]{ android.Manifest.permission.ACCESS_BACKGROUND_LOCATION }, REQUEST_BACKGROUND_LOCATION);
     }
 
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
         updateStatus();
+        if (code == REQUEST_CODE && needsBackgroundLocation()) {
+            // foreground just came through; step straight to the background page
+            requestBackgroundLocation();
+        } else if (code == REQUEST_BACKGROUND_LOCATION && needsBackgroundLocation()) {
+            Toast.makeText(this, "Still not granted - choose \"Allow all the time\" (and Precise) on the page that opens", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void updateStatus() {
@@ -108,6 +152,7 @@ public class JawnGrantAllActivity extends Activity {
             boolean ok = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED;
             sb.append(p.replace("android.permission.", "")).append(": ").append(ok ? "granted" : "missing").append('\n');
         }
+        sb.append("location services: ").append(locationServicesOn() ? "on" : "OFF").append('\n');
         sb.append("overlay: ").append(Settings.canDrawOverlays(this) ? "granted" : "missing").append('\n');
         if (Build.VERSION.SDK_INT >= 29) {
             boolean bg = checkSelfPermission(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED;
@@ -116,6 +161,13 @@ public class JawnGrantAllActivity extends Activity {
         String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
         sb.append("notification access: ").append(flat != null && flat.contains(getPackageName()) ? "granted" : "missing");
         status.setText(sb.toString());
+    }
+
+    private boolean locationServicesOn() {
+        LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (lm == null) return false;
+        if (Build.VERSION.SDK_INT >= 28) return lm.isLocationEnabled();
+        return lm.isProviderEnabled(LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
     }
 
     private void open(String action, Uri data) {
