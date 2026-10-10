@@ -67,6 +67,10 @@ public class JawnBleService extends Service {
     private HandlerThread thread;
     private Handler handler;
     private ServerSocket serverSocket;
+    /** Cleared from onDestroy so acceptLoop() can leave. Without it a closed
+     *  serverSocket makes accept() throw "Socket closed" forever and the loop
+     *  spins at 100% CPU (and churns a SocketException per iteration). */
+    private volatile boolean running = true;
     private final CopyOnWriteArrayList<Socket> clients = new CopyOnWriteArrayList<Socket>();
     private final Object writeLock = new Object();
 
@@ -171,6 +175,7 @@ public class JawnBleService extends Service {
 
     @Override
     public void onDestroy() {
+        running = false;
         try { if (serverSocket != null) serverSocket.close(); } catch (Throwable t) { }
         for (Socket c : clients) { try { c.close(); } catch (Throwable t) { } }
         clients.clear();
@@ -187,7 +192,7 @@ public class JawnBleService extends Service {
     // ---------- socket plumbing ----------
 
     private void acceptLoop() {
-        while (true) {
+        while (running) {
             try {
                 Socket c = serverSocket.accept();
                 clients.add(c);
@@ -195,8 +200,14 @@ public class JawnBleService extends Service {
                 emitStatus(); // tell the new client where things stand
                 new Thread(new clientReader(c)).start();
             } catch (Throwable t) {
-                // socket closed or failed; if the service is dying, just exit
-                if (serverSocket == null) return;
+                // A closed socket makes accept() throw "Socket closed" every
+                // time: leaving must be explicit. The old test checked a field
+                // that was never nulled, so a Stop/Start of the bridge leaked a
+                // thread that spun at 100% CPU (churning allocations and
+                // burning battery). If we are still meant to run, back off
+                // briefly instead of hot-looping.
+                if (!running || serverSocket == null || serverSocket.isClosed()) return;
+                try { Thread.sleep(200); } catch (InterruptedException ie) { return; }
             }
         }
     }
