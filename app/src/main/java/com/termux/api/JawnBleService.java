@@ -84,6 +84,20 @@ public class JawnBleService extends Service {
     private String targetMac;
     private UUID targetService, targetRx, targetTx;
     private long reconnectDelay = 3000;
+    /** A connectGatt() attempt that never reports back leaves a client stuck
+     *  "connecting" forever and every retry no-ops on it. Android's BLE stack
+     *  can swallow the callback when the peripheral vanishes mid-connect, and
+     *  each stuck client leaks until the adapter refuses to connect at all
+     *  (bluetooth "just stops working" until the phone is restarted). */
+    private static final long CONNECT_TIMEOUT_MS = 20000;
+    /** Only a link that stood this long is a real link. A drop sooner is a flap
+     *  (the watch rebooted, or its radio slept): the reconnect delay keeps
+     *  doubling instead of resetting, so a connect-then-drop loop cannot retry
+     *  every 3 s for an hour and cook the phone. */
+    private static final long STABLE_LINK_MS = 30000;
+    private boolean connecting = false;
+    private long connectStartedAt = 0;
+    private long connectedAt = 0;
 
     private final ArrayDeque<byte[]> writeQueue = new ArrayDeque<byte[]>();
     private boolean writing = false;
@@ -375,6 +389,10 @@ public class JawnBleService extends Service {
             emitError("bad uuid: " + t);
             return;
         }
+        // A second connect for a target already linked (or mid-connect) must
+        // not tear the first attempt down: the racing clients were one half of
+        // the reconnect churn that ran the phone hot.
+        if (mac.equals(targetMac) && (gatt != null || connecting)) { emitStatus(); return; }
         targetMtu = wantMtu;
         autoReconnect = true;
         reconnectDelay = 3000;
@@ -416,28 +434,63 @@ public class JawnBleService extends Service {
     }
 
     private void doConnect() {
+        if (gatt != null || connecting) {
+            return;   // one client at a time: a rival connectGatt leaks the first
+        }
         try {
             BluetoothDevice dev = adapter.getRemoteDevice(targetMac);
+            connecting = true;
+            connectStartedAt = System.currentTimeMillis();
             gatt = dev.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
-            if (gatt == null) { emitError("connectGatt returned null"); scheduleReconnect(); }
+            if (gatt == null) {
+                connecting = false;
+                emitError("connectGatt returned null");
+                scheduleReconnect();
+                return;
+            }
+            handler.removeCallbacks(connectTimeout);
+            handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS + 1000);
         } catch (Throwable t) {
+            connecting = false;
             emitError("connect failed: " + t);
             scheduleReconnect();
         }
     }
 
+    /** connectGatt() that never calls back is a real Android failure mode: the
+     *  peripheral vanished mid-connect and the stack swallowed the event. The
+     *  client would sit "connecting" forever -- no retry, and one leaked entry
+     *  in the adapter's client table per attempt. Close it and retry. */
+    private final Runnable connectTimeout = new Runnable() {
+        public void run() {
+            if (!connecting) { return; }
+            Logger.logInfo(LOG_TAG, "connect attempt timed out; closing and retrying");
+            closeGatt();
+            scheduleReconnect();
+        }
+    };
+
+    private final Runnable reconnectRunner = new Runnable() {
+        public void run() {
+            if (autoReconnect && gatt == null && !connecting) doConnect();
+        }
+    };
+
     private void scheduleReconnect() {
         if (!autoReconnect) return;
         long delay = reconnectDelay;
         reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-        handler.postDelayed(new Runnable() {
-            public void run() {
-                if (autoReconnect && gatt == null) doConnect();
-            }
-        }, delay);
+        // one pending retry at a time: a second schedule moves the attempt
+        // instead of racing two connects against each other
+        handler.removeCallbacks(reconnectRunner);
+        handler.postDelayed(reconnectRunner, delay);
     }
 
     private void closeGatt() {
+        connecting = false;
+        connectedAt = 0;
+        handler.removeCallbacks(connectTimeout);
+        handler.removeCallbacks(reconnectRunner);
         synchronized (writeQueue) { writeQueue.clear(); writing = false; }
         writeChar = null;
         notifyChar = null;
@@ -449,8 +502,17 @@ public class JawnBleService extends Service {
 
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
         public void onConnectionStateChange(BluetoothGatt g, int status, int newState) {
+            if (g != gatt) {
+                // a callback from a client that has already been replaced (a
+                // connect that timed out, then a fresh one): close it, so the
+                // adapter's client table does not grow a dead entry per flap
+                try { g.close(); } catch (Throwable t) { }
+                return;
+            }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                reconnectDelay = 3000;
+                connecting = false;
+                connectedAt = System.currentTimeMillis();
+                handler.removeCallbacks(connectTimeout);
                 if (targetMtu > 0) {
                     // Off by default: requesting 512 disturbed the T-Watch's
                     // display rendering (BLE radio + LVGL flush contention).
@@ -459,7 +521,14 @@ public class JawnBleService extends Service {
                 }
                 try { g.discoverServices(); } catch (Throwable t) { emitError("discoverServices: " + t); }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                // read the uptime before closeGatt() clears connectedAt
+                long upFor = connectedAt == 0 ? 0 : System.currentTimeMillis() - connectedAt;
                 closeGatt();
+                if (upFor >= STABLE_LINK_MS) {
+                    reconnectDelay = 3000;   // a real link dropped: retry promptly
+                }
+                // else a flap (the watch sleeping or rebooting): leave the
+                // delay doubling, so the retry cadence backs off to 30 s
                 try {
                     JSONObject o = new JSONObject();
                     o.put("event", "disconnected");
