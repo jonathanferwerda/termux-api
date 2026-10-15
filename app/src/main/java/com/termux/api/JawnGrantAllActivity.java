@@ -83,6 +83,10 @@ public class JawnGrantAllActivity extends Activity {
         l.add(android.Manifest.permission.SEND_SMS);
         l.add(android.Manifest.permission.READ_CALL_LOG);
         l.add(android.Manifest.permission.READ_CONTACTS);
+        // the phone app's own half: termux-telephony-call needs CALL_PHONE and the
+        // call-state listener needs READ_PHONE_STATE, both declared in the manifest
+        l.add(android.Manifest.permission.READ_PHONE_STATE);
+        l.add(android.Manifest.permission.CALL_PHONE);
         l.add(android.Manifest.permission.USE_BIOMETRIC);
         if (Build.VERSION.SDK_INT >= 31) {
             l.add(android.Manifest.permission.BLUETOOTH_SCAN);
