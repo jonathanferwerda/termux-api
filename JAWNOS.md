@@ -105,3 +105,18 @@ certificate (required for the shared com.termux UID).
   does, or the dashboard button) and the watch's notifications flow without a
   send having to happen first. An explicit disconnect still disconnects; a
   service restart re-acquires.
+
+## JawnOS delta: a wedged radio no longer holds the write queue
+
+- A write part handed to the stack that is not acknowledged within
+  `WRITE_ACK_TIMEOUT_MS` (8 s) now fails the link instead of waiting out
+  Android's link supervision timeout. A watch that suspends its radio to sleep
+  never acks a write, so the old code held `writing` true for ~20 s and every
+  message queued behind it - unbounded, since sends are fire-and-forget. The
+  wait now ends with an `error` for the pending send and a disconnect plus the
+  usual backoff reconnect (reason `write timeout`).
+- The per-link write queue is capped at `WRITE_QUEUE_MAX_BYTES` (64 KB).
+  Overflow drops the queued messages and emits `write queue overflow`: a message
+  whose middle was dropped could never be delivered whole anyway. A queue with
+  no link to drain it (`gatt`/`writeChar` cleared) is dropped at once rather
+  than replayed into whatever link comes next.

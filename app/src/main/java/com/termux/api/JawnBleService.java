@@ -120,6 +120,21 @@ public class JawnBleService extends Service {
     private static final int RX_MAX_PARTS = 4096;
     /** Longest "<i>/<n>:" prefix the framing maths budgets for. */
     private static final int FRAME_HEADER_ROOM = 12;
+    /** How long one part may sit unacknowledged before the link is treated as
+     *  wedged. A watch that suspends its radio never acks a write, and Android
+     *  only reports the drop when the link supervision timeout expires (20 s or
+     *  more), so every message queued behind that write waited out the whole
+     *  timeout and the queue grew with each one. Recycle the link instead: the
+     *  pending message fails at once and the reconnect path restores the radio
+     *  when the watch wakes. Comfortably above a healthy write - a whole room
+     *  push is a couple of seconds even at mtu 23. */
+    private static final long WRITE_ACK_TIMEOUT_MS = 8000;
+    /** Cap on one link's unsent queue, in bytes. Sends are fire-and-forget, so
+     *  nothing above them stops a sleeping watch accumulating messages. A
+     *  message is all-or-nothing (its parts are framed with a total), so
+     *  overflow drops the queue rather than deliver a message missing its
+     *  middle. */
+    private static final int WRITE_QUEUE_MAX_BYTES = 64 * 1024;
 
     private int autoConnectAttempts = 0;
     /** Incremented on every successful announce, so "most recently connected"
@@ -583,6 +598,8 @@ public class JawnBleService extends Service {
         final ArrayDeque<WritePart> writeQueue = new ArrayDeque<WritePart>();
         boolean writing = false;
         WritePart currentPart = null;
+        /** Bytes sitting in writeQueue (not the part in flight). */
+        int writeQueueBytes = 0;
 
         ArrayList<byte[]> rxParts = null;
         int rxTotal = 0;
@@ -590,6 +607,7 @@ public class JawnBleService extends Service {
 
         final Runnable connectTimeout;
         final Runnable reconnectRunner;
+        final Runnable writeTimeout;
 
         Link(String mac, UUID service, UUID rx, UUID tx, int targetMtu, boolean compress) {
             this.mac = mac;
@@ -604,6 +622,9 @@ public class JawnBleService extends Service {
             };
             this.reconnectRunner = new Runnable() {
                 public void run() { reconnectNow(Link.this); }
+            };
+            this.writeTimeout = new Runnable() {
+                public void run() { writeTimedOut(Link.this); }
             };
         }
 
@@ -846,6 +867,7 @@ public class JawnBleService extends Service {
     private void releaseGatt(Link link) {
         handler.removeCallbacks(link.connectTimeout);
         handler.removeCallbacks(link.reconnectRunner);
+        handler.removeCallbacks(link.writeTimeout);
         link.nextRetryAt = 0;
         link.connecting = false;
         link.connectedAt = 0;
@@ -854,6 +876,7 @@ public class JawnBleService extends Service {
         link.since = System.currentTimeMillis();
         link.mtu = 23;
         link.writeQueue.clear();
+        link.writeQueueBytes = 0;
         link.writing = false;
         link.currentPart = null;
         resetRx(link);
@@ -1179,16 +1202,34 @@ public class JawnBleService extends Service {
         Link link = byGatt.get(g);
         if (link == null || link.gatt != g) return;
         WritePart part = link.currentPart;
+        handler.removeCallbacks(link.writeTimeout);
         link.writing = false;
         link.currentPart = null;
         if (status != BluetoothGatt.GATT_SUCCESS) {
             link.writeQueue.clear();
+            link.writeQueueBytes = 0;
             emitError("write failed: " + status, link.mac, null);
             emitSent(link, part == null ? null : part.id);
             return;
         }
         if (part != null && part.endOfMessage) emitSent(link, part.id);
         pumpWrites(link);
+    }
+
+    /** A part that was handed to the stack but never acknowledged. The radio is
+     *  gone (asleep, or the link is quietly dead), so waiting for Android's own
+     *  supervision timeout only holds everything queued behind it. Fail the
+     *  link now: emitError wakes whoever is waiting on this send, and the
+     *  disconnect + backoff reconnect is the same road a real drop takes. */
+    private void writeTimedOut(Link link) {
+        if (!link.writing) return;
+        Logger.logInfo(LOG_TAG, "write to " + link.mac + " unacknowledged after "
+                + WRITE_ACK_TIMEOUT_MS + "ms; recycling the link");
+        WritePart part = link.currentPart;
+        emitError("write timeout", link.mac, null);
+        if (part != null) Logger.logInfo(LOG_TAG, "write timeout on send id " + part.id
+                + " (" + part.bytes.length + " bytes)");
+        failLink(link, 0, "write timeout");
     }
 
     // ---------- receive reassembly ----------
@@ -1317,6 +1358,8 @@ public class JawnBleService extends Service {
             body--;
             total = data.length == 0 ? 1 : (data.length + body - 1) / body;
         }
+        ArrayList<WritePart> parts = new ArrayList<WritePart>(total);
+        int bytes = 0;
         for (int i = 0; i < total; i++) {
             int off = i * body;
             int len = Math.min(body, Math.max(0, data.length - off));
@@ -1324,8 +1367,24 @@ public class JawnBleService extends Service {
             byte[] part = new byte[head.length + len];
             System.arraycopy(head, 0, part, 0, head.length);
             if (len > 0) System.arraycopy(data, off, part, head.length, len);
-            link.writeQueue.add(new WritePart(part, i == total - 1, id));
+            parts.add(new WritePart(part, i == total - 1, id));
+            bytes += part.length;
         }
+        // A radio that is asleep takes nothing, and sends are fire-and-forget:
+        // without a cap the queue grew for as long as the watch was away. Drop
+        // the stuck messages instead of growing (they cannot be delivered
+        // whole once their order is broken anyway) and say so, so a caller
+        // waiting on this link does not sit out its own deadline.
+        if (link.writeQueueBytes + bytes > WRITE_QUEUE_MAX_BYTES) {
+            int dropped = link.writeQueueBytes;
+            link.writeQueue.clear();
+            link.writeQueueBytes = 0;
+            Logger.logInfo(LOG_TAG, "write queue for " + link.mac + " overflowed: dropped "
+                    + dropped + " queued bytes (the radio is not taking writes)");
+            emitError("write queue overflow", link.mac, null);
+        }
+        for (WritePart p : parts) link.writeQueue.add(p);
+        link.writeQueueBytes += bytes;
         pumpWrites(link);
     }
 
@@ -1337,9 +1396,22 @@ public class JawnBleService extends Service {
 
     private void pumpWrites(Link link) {
         if (link.writing) return;
-        if (link.gatt == null || link.writeChar == null) return;
+        if (link.gatt == null || link.writeChar == null) {
+            // Nothing can drain this queue: drop it here rather than replay
+            // stale messages into whatever link comes next.
+            if (!link.writeQueue.isEmpty()) {
+                int dropped = link.writeQueueBytes;
+                link.writeQueue.clear();
+                link.writeQueueBytes = 0;
+                Logger.logInfo(LOG_TAG, "no link to " + link.mac + "; dropped "
+                        + dropped + " queued bytes");
+                emitError("not connected", link.mac, null);
+            }
+            return;
+        }
         WritePart next = link.writeQueue.poll();
         if (next == null) return;
+        link.writeQueueBytes = Math.max(0, link.writeQueueBytes - next.bytes.length);
         link.writing = true;
         link.currentPart = next;
         try {
@@ -1356,13 +1428,20 @@ public class JawnBleService extends Service {
                 link.writing = false;
                 link.currentPart = null;
                 link.writeQueue.clear();
+                link.writeQueueBytes = 0;
                 emitError("writeCharacteristic returned false", link.mac, null);
                 emitSent(link, next.id);
+                return;
             }
+            // The stack accepted the part; it is not delivered until the write
+            // callback says so, and a radio that has slept never sends one.
+            handler.removeCallbacks(link.writeTimeout);
+            handler.postDelayed(link.writeTimeout, WRITE_ACK_TIMEOUT_MS);
         } catch (Throwable t) {
             link.writing = false;
             link.currentPart = null;
             link.writeQueue.clear();
+            link.writeQueueBytes = 0;
             emitError("write: " + t, link.mac, null);
             emitSent(link, next.id);
         }
