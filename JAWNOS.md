@@ -120,3 +120,15 @@ certificate (required for the shared com.termux UID).
   whose middle was dropped could never be delivered whole anyway. A queue with
   no link to drain it (`gatt`/`writeChar` cleared) is dropped at once rather
   than replayed into whatever link comes next.
+
+## JawnOS delta: a background heartbeat when the phone is idle
+
+- A reconnect while the screen is off is now a **background** request
+  (`connectGatt(..., autoConnect=true)`), not an active one. An active attempt
+  wakes the radio just to fail while the watch sleeps; a background request
+  costs nothing until the peripheral advertises, so a wrist tilt connects at
+  once and "hey jawn" is not delayed. The screen turning on promotes any waiting
+  request to an active connect immediately. A background request is re-issued
+  after `SCREEN_OFF_CONNECT_TIMEOUT_MS` (5 minutes), which is the heartbeat.
+- The screen state comes from `ACTION_SCREEN_ON`/`ACTION_SCREEN_OFF`; the
+  receiver is registered in `onCreate` and removed in `onDestroy`.

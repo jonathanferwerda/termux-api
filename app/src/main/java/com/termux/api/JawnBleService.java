@@ -17,7 +17,10 @@ import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanResult;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -25,6 +28,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.ParcelUuid;
+import android.os.PowerManager;
 import android.util.SparseArray;
 
 import org.json.JSONArray;
@@ -114,6 +118,9 @@ public class JawnBleService extends Service {
     private static final long STABLE_LINK_MS = 30000;
     private static final long RECONNECT_START_MS = 3000;
     private static final long RECONNECT_MAX_MS = 30000;
+    /** A background (autoConnect) request may wait this long for the watch to
+     *  advertise before it is re-issued. The radio stays asleep until then. */
+    private static final long SCREEN_OFF_CONNECT_TIMEOUT_MS = 5 * 60 * 1000;
     /** A pause this long means a new message, not a lost part. */
     private static final long RX_GAP_MS = 5000;
     /** A runaway total cannot grow the buffer without bound. */
@@ -137,6 +144,10 @@ public class JawnBleService extends Service {
     private static final int WRITE_QUEUE_MAX_BYTES = 64 * 1024;
 
     private int autoConnectAttempts = 0;
+    /** Whether the phone is interactive. With the screen off a reconnect is a
+     *  background request, which costs no radio until the watch advertises. */
+    private volatile boolean screenOn = true;
+    private BroadcastReceiver screenReceiver;
     /** Incremented on every successful announce, so "most recently connected"
      *  is exact even when two links finish in the same millisecond. */
     private long connectSeq = 0;
@@ -211,6 +222,33 @@ public class JawnBleService extends Service {
         thread.start();
         handler = new Handler(thread.getLooper());
 
+        // While the screen is off the watch decides when it is reachable (a
+        // wrist tilt wakes it), so the link waits in the background instead of
+        // waking the radio on every retry. Screen-on promotes it at once.
+        try {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            screenOn = pm == null || pm.isInteractive();
+            screenReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    boolean on = Intent.ACTION_SCREEN_ON.equals(intent.getAction());
+                    if (on && !screenOn) {
+                        screenOn = true;
+                        handler.post(new Runnable() {
+                            public void run() { promoteLinks(); }
+                        });
+                    }
+                    else if (!on) { screenOn = false; }
+                }
+            };
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_SCREEN_ON);
+            filter.addAction(Intent.ACTION_SCREEN_OFF);
+            registerReceiver(screenReceiver, filter);
+        } catch (Throwable t) {
+            screenOn = true;
+        }
+
         try {
             // Loopback TCP: a filesystem unix socket created here was not usable
             // from the other app of the shared UID (app mount namespaces), and
@@ -255,6 +293,10 @@ public class JawnBleService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        if (screenReceiver != null) {
+            try { unregisterReceiver(screenReceiver); } catch (Throwable t) { }
+            screenReceiver = null;
+        }
         try { if (serverSocket != null) serverSocket.close(); } catch (Throwable t) { }
         for (Socket c : clients) { try { c.close(); } catch (Throwable t) { } }
         clients.clear();
@@ -585,6 +627,8 @@ public class JawnBleService extends Service {
         BluetoothGattCharacteristic notifyChar;
         boolean autoReconnect = true;
         boolean connecting = false;
+        /** This attempt is a background (autoConnect) request, not an active one. */
+        boolean background = false;
         boolean announced = false;
         long connectedAt = 0;
         long connectStartedAt = 0;
@@ -735,7 +779,7 @@ public class JawnBleService extends Service {
             existing.reconnectDelay = RECONNECT_START_MS;
             existing.attempt = 0;
             persistTargets();
-            doConnect(existing);
+            doConnect(existing, false);
             return;
         }
         if (existing != null) {
@@ -759,7 +803,7 @@ public class JawnBleService extends Service {
         Link link = new Link(mac, service, rx, tx, targetMtu, compress);
         links.put(mac, link);
         persistTargets();
-        doConnect(link);
+        doConnect(link, false);
     }
 
     private void disconnect(JSONObject o) {
@@ -804,7 +848,7 @@ public class JawnBleService extends Service {
         emitDisconnected(link, 0, "requested", 0);
     }
 
-    private void doConnect(Link link) {
+    private void doConnect(Link link, boolean background) {
         if (link.gatt != null || link.connecting) return;
         handler.removeCallbacks(link.reconnectRunner);
         handler.removeCallbacks(link.connectTimeout);
@@ -816,7 +860,13 @@ public class JawnBleService extends Service {
             link.connectStartedAt = System.currentTimeMillis();
             link.since = link.connectStartedAt;
             link.attempt++;
-            BluetoothGatt g = dev.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
+            // With the screen off, an active attempt wakes the radio just to fail
+            // while the watch sleeps. A background request waits for the
+            // peripheral to advertise - a wrist tilt - and costs nothing until
+            // then, so "hey jawn" is still met the moment the watch wakes.
+            boolean bg = background && !screenOn;
+            link.background = bg;
+            BluetoothGatt g = dev.connectGatt(this, bg, gattCallback, BluetoothDevice.TRANSPORT_LE);
             if (g == null) {
                 link.connecting = false;
                 link.state = STATE_DISCONNECTED;
@@ -827,13 +877,26 @@ public class JawnBleService extends Service {
             }
             link.gatt = g;
             byGatt.put(g, link);
-            handler.postDelayed(link.connectTimeout, CONNECT_TIMEOUT_MS + 1000);
+            handler.postDelayed(link.connectTimeout,
+                (bg ? SCREEN_OFF_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS) + 1000);
         } catch (Throwable t) {
             link.connecting = false;
             link.state = STATE_DISCONNECTED;
             link.since = System.currentTimeMillis();
             emitError("connect failed: " + t, link.mac, null);
             scheduleReconnect(link);
+        }
+    }
+
+    /** The screen came on: replace a waiting background request with an active
+     *  connect, so the watch is reachable the moment the person looks. */
+    private void promoteLinks() {
+        if (!running) return;
+        for (Link link : new ArrayList<Link>(links.values())) {
+            if (!link.background || link.gatt == null || isConnected(link)) continue;
+            Logger.logInfo(LOG_TAG, "screen on: promoting link " + link.mac);
+            releaseGatt(link);
+            doConnect(link, false);
         }
     }
 
@@ -846,7 +909,7 @@ public class JawnBleService extends Service {
     private void reconnectNow(Link link) {
         link.nextRetryAt = 0;
         if (!running) return;
-        if (link.autoReconnect && link.gatt == null && !link.connecting) doConnect(link);
+        if (link.autoReconnect && link.gatt == null && !link.connecting) doConnect(link, true);
     }
 
     /** Returns the delay in milliseconds, which is what the disconnected event
@@ -870,6 +933,7 @@ public class JawnBleService extends Service {
         handler.removeCallbacks(link.writeTimeout);
         link.nextRetryAt = 0;
         link.connecting = false;
+        link.background = false;
         link.connectedAt = 0;
         link.announced = false;
         link.state = STATE_DISCONNECTED;
